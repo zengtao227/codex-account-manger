@@ -102,22 +102,20 @@ pub async fn start_openai_oauth_login() -> Result<String, String> {
         urlencoding::encode(SCOPE),
     );
 
-    // 3. Start local callback server (non-blocking for responsive UI)
-    let listener = TcpListener::bind("127.0.0.1:1455")
-        .map_err(|e| format!("端口 1455 绑定失败: {e}"))?;
-    listener.set_nonblocking(true).ok();
+    // 3-7: Run ENTIRE OAuth flow in a background thread to never block UI
+    let result = tauri::async_runtime::spawn_blocking(move || -> Result<String, String> {
+        // 3. Start local callback server
+        let listener = TcpListener::bind("127.0.0.1:1455")
+            .map_err(|e| format!("端口 1455 绑定失败: {e}"))?;
+        listener.set_nonblocking(true).ok();
 
-    // 4. Open default system browser
-    Command::new("open").arg(&auth_url).spawn()
-        .map_err(|e| format!("无法打开浏览器: {e}"))?;
+        // 4. Open browser
+        Command::new("open").arg(&auth_url).spawn().ok();
 
-    log::info!("OAuth: browser opened, waiting for callback...");
-
-    // 5. Poll for callback in a separate OS thread (prevents UI freeze)
-    let state_clone = state.clone();
-    let (tx, rx) = std::sync::mpsc::channel::<Option<String>>();
-    std::thread::spawn(move || {
+        // 5. Poll for callback (max 120s)
         let start = Instant::now();
+        let mut auth_code_result: Option<String> = None;
+
         while start.elapsed() < Duration::from_secs(120) {
             if let Ok((mut stream, _)) = listener.accept() {
                 stream.set_read_timeout(Some(Duration::from_millis(1000))).ok();
@@ -126,90 +124,93 @@ pub async fn start_openai_oauth_login() -> Result<String, String> {
                     let req = String::from_utf8_lossy(&buf[..n]);
                     if let Some(code) = extract_param(&req, "code") {
                         let extracted_state = extract_param(&req, "state").unwrap_or_default();
-                        if extracted_state != state_clone {
+                        if extracted_state != state {
                             let _ = stream.write_all(
                                 html_response("❌ 安全验证失败").as_bytes()
                             );
-                            let _ = tx.send(None);
-                            return;
+                            return Err("State 验证失败".to_string());
                         }
+                        // Respond and immediately close
                         let _ = stream.write_all(
                             html_response("✅ 授权成功！").as_bytes()
                         );
-                        let _ = tx.send(Some(code));
-                        return;
+                        auth_code_result = Some(code);
+                        break;
                     }
                 }
             }
             thread::sleep(Duration::from_millis(200));
         }
-        let _ = tx.send(None);
-    });
 
-    // Wait for the result from the background thread (non-blocking to Tauri runtime)
-    let auth_code = rx.recv().unwrap_or(None);
+        // Close the browser callback tab via osascript (best effort)
+        let _ = Command::new("osascript")
+            .arg("-e")
+            .arg("tell application \"System Events\" to keystroke \"w\" using command down")
+            .spawn();
 
-    let code = auth_code.ok_or("登录超时（120秒），请重试")?;
-    log::info!("OAuth: got auth code, exchanging for tokens...");
+        let code = auth_code_result.ok_or("登录超时（120秒），请重试")?;
 
-    // 6. Exchange code for tokens
-    let token_res = ureq::post(TOKEN_URL)
-        .set("Content-Type", "application/x-www-form-urlencoded")
-        .send_string(&format!(
-            "grant_type=authorization_code\
-            &code={code}\
-            &redirect_uri={}\
-            &client_id={CLIENT_ID}\
-            &code_verifier={code_verifier}",
-            urlencoding::encode(REDIRECT_URI)
-        ))
-        .map_err(|e| format!("Token 交换失败: {e}"))?;
+        // 6. Exchange code for tokens
+        let token_res = ureq::post(TOKEN_URL)
+            .set("Content-Type", "application/x-www-form-urlencoded")
+            .send_string(&format!(
+                "grant_type=authorization_code\
+                &code={code}\
+                &redirect_uri={}\
+                &client_id={CLIENT_ID}\
+                &code_verifier={code_verifier}",
+                urlencoding::encode(REDIRECT_URI)
+            ))
+            .map_err(|e| format!("Token 交换失败: {e}"))?;
 
-    let token_json: Value = token_res.into_json()
-        .map_err(|e| format!("解析 Token 响应失败: {e}"))?;
+        let token_json: Value = token_res.into_json()
+            .map_err(|e| format!("解析 Token 响应失败: {e}"))?;
 
-    if let Some(err) = token_json.get("error") {
-        return Err(format!("OpenAI 返回错误: {}", err));
-    }
+        if let Some(err) = token_json.get("error") {
+            return Err(format!("OpenAI 返回错误: {}", err));
+        }
 
-    // 7. Convert OAuth response to Codex CLI's expected AuthDotJson format
-    //    Codex CLI expects: { auth_mode, tokens: { id_token, access_token, refresh_token, account_id }, last_refresh }
-    let access_token = token_json.get("access_token").and_then(|v| v.as_str())
-        .ok_or("响应中缺少 access_token")?;
-    let refresh_token = token_json.get("refresh_token").and_then(|v| v.as_str())
-        .unwrap_or("");
-    let id_token_raw = token_json.get("id_token").and_then(|v| v.as_str())
-        .unwrap_or("");
+        // 7. Convert to Codex CLI AuthDotJson format
+        let access_token = token_json.get("access_token").and_then(|v| v.as_str())
+            .ok_or("响应中缺少 access_token")?;
+        let refresh_token = token_json.get("refresh_token").and_then(|v| v.as_str())
+            .unwrap_or("");
+        let id_token_raw = token_json.get("id_token").and_then(|v| v.as_str())
+            .unwrap_or("");
+        let account_id = extract_jwt_claim(access_token, "https://api.openai.com/auth", "chatgpt_account_id");
 
-    // Parse chatgpt_account_id from the access_token JWT claims
-    let account_id = extract_jwt_claim(access_token, "https://api.openai.com/auth", "chatgpt_account_id");
+        let auth_dot_json = serde_json::json!({
+            "auth_mode": "chatgpt",
+            "tokens": {
+                "id_token": id_token_raw,
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+                "account_id": account_id,
+            },
+            "last_refresh": chrono_now_rfc3339(),
+        });
 
-    // Build Codex CLI compatible auth.json
-    let auth_dot_json = serde_json::json!({
-        "auth_mode": "chatgpt",
-        "tokens": {
-            "id_token": id_token_raw,
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-            "account_id": account_id,
-        },
-        "last_refresh": chrono_now_rfc3339(),
-    });
+        let auth_str = serde_json::to_string_pretty(&auth_dot_json)
+            .map_err(|e| format!("序列化失败: {e}"))?;
 
-    let auth_str = serde_json::to_string_pretty(&auth_dot_json)
-        .map_err(|e| format!("序列化失败: {e}"))?;
+        // Write to ~/.codex/auth.json
+        let dir = codex_dir();
+        fs::create_dir_all(&dir).ok();
+        if auth_path().exists() {
+            let _ = fs::copy(auth_path(), dir.join("auth.json.bak"));
+        }
+        fs::write(auth_path(), &auth_str)
+            .map_err(|e| format!("写入 auth.json 失败: {e}"))?;
 
-    // Write to ~/.codex/auth.json immediately
-    let dir = codex_dir();
-    fs::create_dir_all(&dir).ok();
-    if auth_path().exists() {
-        let _ = fs::copy(auth_path(), dir.join("auth.json.bak"));
-    }
-    fs::write(auth_path(), &auth_str)
-        .map_err(|e| format!("写入 auth.json 失败: {e}"))?;
+        // 8. Auto-restart Codex IDE
+        let _ = Command::new("pkill").arg("-x").arg("Codex").output();
+        thread::sleep(Duration::from_millis(800));
+        let _ = Command::new("open").arg("-a").arg("Codex").spawn();
 
-    log::info!("OAuth: login successful, auth.json saved");
-    Ok(auth_str)
+        Ok(auth_str)
+    }).await.map_err(|e| format!("内部错误: {e}"))?;
+
+    result
 }
 
 /// Check if auth.json exists
