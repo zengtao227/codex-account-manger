@@ -20,8 +20,20 @@ const SCOPE: &str = "openid profile email offline_access";
 
 // ── File Helpers ──────────────────────────────────────────────────────────
 fn codex_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home).join(".codex")
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        PathBuf::from(home).join(".codex")
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let user_profile = std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\".to_string());
+        PathBuf::from(user_profile).join(".codex")
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        PathBuf::from("/tmp").join(".codex")
+    }
 }
 
 fn auth_path() -> PathBuf {
@@ -110,7 +122,12 @@ pub async fn start_openai_oauth_login() -> Result<String, String> {
         listener.set_nonblocking(true).ok();
 
         // 4. Open browser
+        #[cfg(target_os = "macos")]
         Command::new("open").arg(&auth_url).spawn().ok();
+        #[cfg(target_os = "windows")]
+        Command::new("cmd").arg("/c").arg("start").arg(&auth_url).spawn().ok();
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        Command::new("xdg-open").arg(&auth_url).spawn().ok();
 
         // 5. Poll for callback (max 120s)
         let start = Instant::now();
@@ -142,7 +159,8 @@ pub async fn start_openai_oauth_login() -> Result<String, String> {
             thread::sleep(Duration::from_millis(200));
         }
 
-        // Close the browser callback tab via osascript (best effort)
+        // Close the browser callback tab best effort
+        #[cfg(target_os = "macos")]
         let _ = Command::new("osascript")
             .arg("-e")
             .arg("tell application \"System Events\" to keystroke \"w\" using command down")
@@ -202,16 +220,8 @@ pub async fn start_openai_oauth_login() -> Result<String, String> {
         fs::write(auth_path(), &auth_str)
             .map_err(|e| format!("写入 auth.json 失败: {e}"))?;
 
-        // 8. Auto-restart Codex IDE (force kill with -9 to skip confirmations)
-        let _ = Command::new("pkill").arg("-9").arg("-f").arg("Codex.app").output();
-        thread::sleep(Duration::from_millis(1500));
-        let _ = Command::new("open").arg("-a").arg("Codex").spawn();
-
-        // 9. Bring Codex Manager back to focus
-        let _ = Command::new("osascript")
-            .arg("-e")
-            .arg("tell application \"Codex Manager\" to activate")
-            .spawn();
+        // 8. Auto-restart Codex IDE
+        restart_logic();
 
         Ok(auth_str)
     }).await.map_err(|e| format!("内部错误: {e}"))?;
@@ -237,23 +247,47 @@ pub fn open_codex_dir() -> Result<(), String> {
 /// Restart Codex IDE so it re-reads auth.json
 #[tauri::command]
 pub fn restart_codex_ide() -> Result<String, String> {
-    // Force kill with -9 to skip Quit confirmations
-    let _ = Command::new("pkill").arg("-9").arg("-f").arg("Codex.app").output();
-    thread::sleep(Duration::from_millis(1500));
+    restart_logic();
+    Ok("Codex IDE 已重启并刷新账户信息".to_string())
+}
 
-    let launched = Command::new("open").arg("-a").arg("Codex").spawn().is_ok();
-    
-    // Bring Codex Manager back to front if needed, but usually the open command brings focus to the new app
-    // If the user wants to stay in Manager, we reactivate it
-    let _ = Command::new("osascript")
-        .arg("-e")
-        .arg("tell application \"Codex Manager\" to activate")
-        .spawn();
+fn restart_logic() {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = Command::new("pkill").arg("-9").arg("-f").arg("Codex.app").output();
+        thread::sleep(Duration::from_millis(1500));
+        let _ = Command::new("open").arg("-a").arg("Codex").spawn();
+        
+        let _ = Command::new("osascript")
+            .arg("-e")
+            .arg("tell application \"Codex Manager\" to activate")
+            .spawn();
+    }
 
-    if launched {
-        Ok("Codex IDE 已重启并刷新账户信息".to_string())
-    } else {
-        Err("无法启动 Codex IDE".to_string())
+    #[cfg(target_os = "windows")]
+    {
+        let _ = Command::new("taskkill").arg("/F").arg("/IM").arg("Codex.exe").output();
+        thread::sleep(Duration::from_millis(1500));
+        
+        let mut launched = false;
+        let local_app_data = std::env::var("LOCALAPPDATA").unwrap_or_default();
+        let paths = [
+            PathBuf::from(&local_app_data).join("Programs").join("Codex").join("Codex.exe"),
+            PathBuf::from("C:\\Program Files\\Codex\\Codex.exe"),
+        ];
+
+        for path in paths {
+            if path.exists() {
+                if Command::new(path).spawn().is_ok() {
+                    launched = true;
+                    break;
+                }
+            }
+        }
+
+        if !launched {
+            let _ = Command::new("Codex.exe").spawn();
+        }
     }
 }
 
