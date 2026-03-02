@@ -204,8 +204,14 @@ pub async fn start_openai_oauth_login() -> Result<String, String> {
 
         // 8. Auto-restart Codex IDE (force kill with -9 to skip confirmations)
         let _ = Command::new("pkill").arg("-9").arg("-f").arg("Codex.app").output();
-        thread::sleep(Duration::from_secs(1));
-        let _ = Command::new("open").arg("/Applications/Codex.app").spawn();
+        thread::sleep(Duration::from_millis(1500));
+        let _ = Command::new("open").arg("-a").arg("Codex").spawn();
+
+        // 9. Bring Codex Manager back to focus
+        let _ = Command::new("osascript")
+            .arg("-e")
+            .arg("tell application \"Codex Manager\" to activate")
+            .spawn();
 
         Ok(auth_str)
     }).await.map_err(|e| format!("内部错误: {e}"))?;
@@ -233,9 +239,17 @@ pub fn open_codex_dir() -> Result<(), String> {
 pub fn restart_codex_ide() -> Result<String, String> {
     // Force kill with -9 to skip Quit confirmations
     let _ = Command::new("pkill").arg("-9").arg("-f").arg("Codex.app").output();
-    thread::sleep(Duration::from_secs(1));
+    thread::sleep(Duration::from_millis(1500));
 
-    let launched = Command::new("open").arg("/Applications/Codex.app").spawn().is_ok();
+    let launched = Command::new("open").arg("-a").arg("Codex").spawn().is_ok();
+    
+    // Bring Codex Manager back to front if needed, but usually the open command brings focus to the new app
+    // If the user wants to stay in Manager, we reactivate it
+    let _ = Command::new("osascript")
+        .arg("-e")
+        .arg("tell application \"Codex Manager\" to activate")
+        .spawn();
+
     if launched {
         Ok("Codex IDE 已重启并刷新账户信息".to_string())
     } else {
