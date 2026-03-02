@@ -16,24 +16,8 @@ function App() {
 
   return (
     <div className="app-shell">
-      {/* Title Bar - draggable */}
-      <header className="titlebar" data-tauri-drag-region>
-        <div className="titlebar__controls">
-          <div className="titlebar__dot titlebar__dot--close" onClick={async () => {
-            const { getCurrentWindow } = await import('@tauri-apps/api/window');
-            getCurrentWindow().close();
-          }} />
-          <div className="titlebar__dot titlebar__dot--min" onClick={async () => {
-            const { getCurrentWindow } = await import('@tauri-apps/api/window');
-            getCurrentWindow().minimize();
-          }} />
-          <div className="titlebar__dot titlebar__dot--max" onClick={async () => {
-            const { getCurrentWindow } = await import('@tauri-apps/api/window');
-            const win = getCurrentWindow();
-            if (await win.isMaximized()) { win.unmaximize(); } else { win.maximize(); }
-          }} />
-        </div>
-
+      {/* Native titlebar will be provided by OS, we keep a minimal header for logo/version */}
+      <header className="titlebar" style={{ paddingLeft: 80 }}>
         <div className="titlebar__logo">
           <div className="titlebar__logo-icon">
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
@@ -42,8 +26,7 @@ function App() {
           </div>
           <span className="titlebar__logo-text">Codex Manager</span>
         </div>
-
-        <div className="titlebar__version">v0.1.0</div>
+        <div className="titlebar__version">v0.1.1</div>
       </header>
 
       {/* Main */}

@@ -202,9 +202,9 @@ pub async fn start_openai_oauth_login() -> Result<String, String> {
         fs::write(auth_path(), &auth_str)
             .map_err(|e| format!("写入 auth.json 失败: {e}"))?;
 
-        // 8. Auto-restart Codex IDE
-        let _ = Command::new("pkill").arg("-f").arg("Codex.app").output();
-        thread::sleep(Duration::from_secs(2));
+        // 8. Auto-restart Codex IDE (force kill with -9 to skip confirmations)
+        let _ = Command::new("pkill").arg("-9").arg("-f").arg("Codex.app").output();
+        thread::sleep(Duration::from_secs(1));
         let _ = Command::new("open").arg("/Applications/Codex.app").spawn();
 
         Ok(auth_str)
@@ -231,22 +231,13 @@ pub fn open_codex_dir() -> Result<(), String> {
 /// Restart Codex IDE so it re-reads auth.json
 #[tauri::command]
 pub fn restart_codex_ide() -> Result<String, String> {
-    let kill_result = Command::new("pkill").arg("-f").arg("Codex.app").output();
-    let was_running = match &kill_result {
-        Ok(output) => output.status.success(),
-        Err(_) => false,
-    };
-
-    if was_running {
-        thread::sleep(Duration::from_secs(2));
-    }
+    // Force kill with -9 to skip Quit confirmations
+    let _ = Command::new("pkill").arg("-9").arg("-f").arg("Codex.app").output();
+    thread::sleep(Duration::from_secs(1));
 
     let launched = Command::new("open").arg("/Applications/Codex.app").spawn().is_ok();
-
-    if was_running && launched {
-        Ok("Codex IDE 已重启".to_string())
-    } else if launched {
-        Ok("Codex IDE 已启动".to_string())
+    if launched {
+        Ok("Codex IDE 已重启并刷新账户信息".to_string())
     } else {
         Err("无法启动 Codex IDE".to_string())
     }
