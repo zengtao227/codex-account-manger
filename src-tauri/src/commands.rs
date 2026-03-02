@@ -15,7 +15,6 @@ use serde_json::Value;
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const AUTH_BASE: &str = "https://auth.openai.com/oauth/authorize";
 const TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
-const REDIRECT_PORT: u16 = 1455;
 const REDIRECT_URI: &str = "http://localhost:1455/auth/callback";
 const SCOPE: &str = "openid profile email offline_access";
 
@@ -47,6 +46,7 @@ fn sha256_base64url(data: &str) -> String {
 
 // ── Commands ──────────────────────────────────────────────────────────────
 
+/// Read ~/.codex/auth.json
 #[tauri::command]
 pub fn read_current_auth() -> Result<String, String> {
     let path = auth_path();
@@ -54,28 +54,42 @@ pub fn read_current_auth() -> Result<String, String> {
     fs::read_to_string(&path).map_err(|e| format!("读取失败: {e}"))
 }
 
+/// Write content to ~/.codex/auth.json (with backup)
 #[tauri::command]
 pub fn write_auth(content: String) -> Result<(), String> {
     let dir = codex_dir();
     fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {e}"))?;
     let path = auth_path();
+    // Backup existing file
     if path.exists() {
         let _ = fs::copy(&path, dir.join("auth.json.bak"));
     }
+    // Validate JSON before writing
     if !content.is_empty() {
         serde_json::from_str::<Value>(&content).map_err(|e| format!("JSON 无效: {e}"))?;
     }
     fs::write(&path, &content).map_err(|e| format!("写入失败: {e}"))?;
+    log::info!("auth.json written ({} bytes)", content.len());
     Ok(())
 }
 
+/// Full PKCE OAuth flow:
+///  1. Generate PKCE verifier/challenge
+///  2. Start local TCP callback server on port 1455
+///  3. Open default browser to OpenAI auth URL
+///  4. Wait for callback, extract authorization code
+///  5. Exchange code for tokens
+///  6. Save COMPLETE response as auth.json
+///  7. Return the full JSON to frontend
 #[tauri::command]
 pub async fn start_openai_oauth_login() -> Result<String, String> {
+    // 1. Generate PKCE
     let verifier_bytes = random_bytes(32);
     let code_verifier = base64url(&verifier_bytes);
     let code_challenge = sha256_base64url(&code_verifier);
     let state = base64url(&random_bytes(16));
 
+    // 2. Build authorization URL
     let auth_url = format!(
         "{AUTH_BASE}?response_type=code\
         &client_id={CLIENT_ID}\
@@ -88,22 +102,38 @@ pub async fn start_openai_oauth_login() -> Result<String, String> {
         urlencoding::encode(SCOPE),
     );
 
+    // 3. Start local callback server (non-blocking for responsive UI)
     let listener = TcpListener::bind("127.0.0.1:1455")
-        .map_err(|e| format!("端口绑定失败: {e}"))?;
+        .map_err(|e| format!("端口 1455 绑定失败: {e}"))?;
     listener.set_nonblocking(true).ok();
 
-    Command::new("open").arg(&auth_url).spawn().ok();
+    // 4. Open default system browser
+    Command::new("open").arg(&auth_url).spawn()
+        .map_err(|e| format!("无法打开浏览器: {e}"))?;
 
+    log::info!("OAuth: browser opened, waiting for callback...");
+
+    // 5. Poll for callback (max 120s)
     let start = Instant::now();
     let mut auth_code = None;
 
     while start.elapsed() < Duration::from_secs(120) {
         if let Ok((mut stream, _)) = listener.accept() {
+            stream.set_read_timeout(Some(Duration::from_millis(1000))).ok();
             let mut buf = [0u8; 4096];
             if let Ok(n) = stream.read(&mut buf) {
                 let req = String::from_utf8_lossy(&buf[..n]);
                 if let Some(code) = extract_param(&req, "code") {
-                    let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\nDone!");
+                    let extracted_state = extract_param(&req, "state").unwrap_or_default();
+                    if extracted_state != state {
+                        let _ = stream.write_all(
+                            html_response("❌ 安全验证失败，请重试").as_bytes()
+                        );
+                        return Err("State 验证失败".to_string());
+                    }
+                    let _ = stream.write_all(
+                        html_response("✅ 授权成功！请回到 Codex Manager").as_bytes()
+                    );
                     auth_code = Some(code);
                     break;
                 }
@@ -112,38 +142,62 @@ pub async fn start_openai_oauth_login() -> Result<String, String> {
         thread::sleep(Duration::from_millis(200));
     }
 
-    let code = auth_code.ok_or("Login timeout")?;
-    let res = ureq::post(TOKEN_URL)
+    let code = auth_code.ok_or("登录超时（120秒），请重试")?;
+    log::info!("OAuth: got auth code, exchanging for tokens...");
+
+    // 6. Exchange code for tokens
+    let token_res = ureq::post(TOKEN_URL)
         .set("Content-Type", "application/x-www-form-urlencoded")
         .send_string(&format!(
-            "grant_type=authorization_code&code={code}&redirect_uri={}&client_id={CLIENT_ID}&code_verifier={code_verifier}",
+            "grant_type=authorization_code\
+            &code={code}\
+            &redirect_uri={}\
+            &client_id={CLIENT_ID}\
+            &code_verifier={code_verifier}",
             urlencoding::encode(REDIRECT_URI)
         ))
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("Token 交换失败: {e}"))?;
 
-    let json: Value = res.into_json().map_err(|e| e.to_string())?;
-    let access_token = json.get("access_token").and_then(|v| v.as_str()).ok_or("No token")?;
-    
-    let out = serde_json::json!({
-        "token": access_token,
-        "token_type": "Bearer",
-        "client_id": CLIENT_ID,
-    }).to_string();
+    let token_json: Value = token_res.into_json()
+        .map_err(|e| format!("解析 Token 响应失败: {e}"))?;
 
-    Ok(out)
+    if let Some(err) = token_json.get("error") {
+        return Err(format!("OpenAI 返回错误: {}", err));
+    }
+
+    // 7. Save the COMPLETE original JSON from OpenAI (not a subset!)
+    let auth_str = serde_json::to_string_pretty(&token_json)
+        .map_err(|e| format!("序列化失败: {e}"))?;
+
+    // Write to ~/.codex/auth.json immediately
+    let dir = codex_dir();
+    fs::create_dir_all(&dir).ok();
+    if auth_path().exists() {
+        let _ = fs::copy(auth_path(), dir.join("auth.json.bak"));
+    }
+    fs::write(auth_path(), &auth_str)
+        .map_err(|e| format!("写入 auth.json 失败: {e}"))?;
+
+    log::info!("OAuth: login successful, auth.json saved");
+    Ok(auth_str)
 }
 
+/// Check if auth.json exists
 #[tauri::command]
 pub fn auth_exists() -> bool { auth_path().exists() }
 
+/// Return codex dir path
 #[tauri::command]
 pub fn get_codex_dir() -> String { codex_dir().to_string_lossy().to_string() }
 
+/// Open codex dir in Finder
 #[tauri::command]
 pub fn open_codex_dir() -> Result<(), String> {
     Command::new("open").arg(codex_dir()).spawn().map_err(|e| e.to_string())?;
     Ok(())
 }
+
+// ── Helpers ───────────────────────────────────────────────────────────────
 
 fn extract_param(req: &str, key: &str) -> Option<String> {
     let path = req.split_whitespace().nth(1)?;
@@ -155,4 +209,21 @@ fn extract_param(req: &str, key: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn html_response(message: &str) -> String {
+    format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\r\n\
+        <!DOCTYPE html><html><head><meta charset='utf-8'><title>Codex Manager</title>\
+        <style>\
+        body{{font-family:-apple-system,sans-serif;display:flex;align-items:center;\
+        justify-content:center;height:100vh;margin:0;background:#0A0E13;color:#F0F4F8;}}\
+        .box{{text-align:center;padding:48px;background:#161D27;border-radius:16px;\
+        border:1px solid rgba(255,255,255,0.08);max-width:400px;}}\
+        </style></head>\
+        <body><div class='box'>\
+        <div style='font-size:20px;margin-bottom:12px'>{message}</div>\
+        <div style='font-size:13px;color:#8C9DB5'>可以关闭此标签页</div>\
+        </div></body></html>"
+    )
 }

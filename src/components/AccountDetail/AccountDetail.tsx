@@ -1,11 +1,6 @@
 import { useState } from 'react';
-import {
-    XAxis, YAxis, CartesianGrid, Tooltip,
-    ResponsiveContainer, Area, AreaChart
-} from 'recharts';
 import type { Account } from '../../types';
 import { useAccountStore } from '../../store/accountStore';
-import { RingChart } from '../common/RingChart';
 import { showToast } from '../common/Toast';
 
 interface AccountDetailProps {
@@ -13,11 +8,8 @@ interface AccountDetailProps {
 }
 
 export function AccountDetail({ account }: AccountDetailProps) {
-    const { switchAccount, removeAccount, updateAccountUsage, usageHistory, activeAccountId, isLoading } = useAccountStore();
+    const { switchAccount, removeAccount, activeAccountId, isLoading } = useAccountStore();
     const isActive = activeAccountId === account.id;
-
-    // Simulated 7-day usage data (demo)
-    const history = usageHistory[account.id] || generateDemoHistory();
 
     const [editing, setEditing] = useState(false);
     const [newAlias, setNewAlias] = useState(account.alias);
@@ -25,8 +17,12 @@ export function AccountDetail({ account }: AccountDetailProps) {
 
     async function handleSwitch() {
         if (isActive) return;
-        await switchAccount(account.id);
-        showToast(`已切换到「${account.alias}」`, 'success');
+        try {
+            await switchAccount(account.id);
+            showToast(`已切换到「${account.alias}」，auth.json 已更新`, 'success');
+        } catch (err) {
+            showToast(`切换失败: ${err}`, 'error');
+        }
     }
 
     function handleRename() {
@@ -43,16 +39,18 @@ export function AccountDetail({ account }: AccountDetailProps) {
         }
     }
 
-    // Demo: simulate usage refresh
-    function handleRefreshUsage() {
-        const fh = Math.floor(Math.random() * 80);
-        const wk = Math.floor(Math.random() * 60);
-        updateAccountUsage(account.id, fh, wk);
-        showToast('用量数据已刷新');
+    // Check if authJson contains a valid token
+    const hasAuth = !!account.authJson;
+    let tokenPreview = '无';
+    if (account.authJson) {
+        try {
+            const parsed = JSON.parse(account.authJson);
+            const token = parsed.access_token || parsed.token || '';
+            if (token) {
+                tokenPreview = token.substring(0, 12) + '...' + token.substring(token.length - 6);
+            }
+        } catch { /* ignore */ }
     }
-
-    const fiveH = account.fiveHourUsagePercent;
-    const weekly = account.weeklyUsagePercent;
 
     return (
         <div className="detail-panel">
@@ -97,20 +95,13 @@ export function AccountDetail({ account }: AccountDetailProps) {
                             {isActive ? '使用中' : '待机'}
                         </span>
                         <span className="badge badge--inactive">
-                            {account.totalSessions} 次会话
+                            {account.totalSessions} 次切换
                         </span>
                     </div>
                 </div>
 
-                {/* Action buttons */}
-                <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
-                    <button
-                        className="btn btn--secondary btn--sm"
-                        onClick={handleRefreshUsage}
-                        title="刷新用量"
-                    >
-                        ↻ 刷新
-                    </button>
+                {/* Delete button */}
+                <div style={{ marginLeft: 'auto' }}>
                     <button className="btn btn--danger btn--sm" onClick={handleDelete}>
                         删除
                     </button>
@@ -123,10 +114,12 @@ export function AccountDetail({ account }: AccountDetailProps) {
                     className="btn btn--primary btn--full"
                     style={{ marginBottom: 20, fontSize: 14, padding: '12px' }}
                     onClick={handleSwitch}
-                    disabled={isLoading}
+                    disabled={isLoading || !hasAuth}
                 >
                     {isLoading ? (
                         <><span className="spinner" /> 切换中…</>
+                    ) : !hasAuth ? (
+                        <>⚠️ 无凭据，请重新登录</>
                     ) : (
                         <>⚡ 切换到此账户</>
                     )}
@@ -146,107 +139,56 @@ export function AccountDetail({ account }: AccountDetailProps) {
                     fontSize: 13,
                     color: 'var(--text-accent)',
                 }}>
-                    <span>●</span> 当前正在使用此账户
+                    <span>●</span> 当前正在使用此账户 — ~/.codex/auth.json 已同步
                 </div>
             )}
 
-            {/* Token Usage */}
+            {/* Account Info Card */}
             <div className="card">
                 <div className="card__title">
                     <span className="card__title-dot" />
-                    Token 用量
+                    账户信息
                 </div>
 
-                <div className="usage-grid">
-                    <RingChart
-                        percent={fiveH}
-                        size={110}
-                        label="5小时额度"
-                        sublabel={fiveH >= 80 ? '⚠️ 即将用尽' : fiveH === 0 ? '暂无数据' : '剩余充足'}
-                    />
-                    <RingChart
-                        percent={weekly}
-                        size={110}
-                        label="本周额度"
-                        sublabel={weekly >= 80 ? '⚠️ 即将用尽' : weekly === 0 ? '暂无数据' : '剩余充足'}
-                    />
+                <div className="stats-row">
+                    <div className="stat-item">
+                        <div className="stat-value">{hasAuth ? '✅ 有效' : '❌ 缺失'}</div>
+                        <div className="stat-label">凭据状态</div>
+                    </div>
+                    <div className="stat-item">
+                        <div className="stat-value">{account.totalSessions}</div>
+                        <div className="stat-label">切换次数</div>
+                    </div>
+                    <div className="stat-item">
+                        <div className="stat-value">{formatDate(account.addedAt)}</div>
+                        <div className="stat-label">添加时间</div>
+                    </div>
+                    <div className="stat-item">
+                        <div className="stat-value">
+                            {account.lastUsedAt ? formatDate(account.lastUsedAt) : '—'}
+                        </div>
+                        <div className="stat-label">最后使用</div>
+                    </div>
                 </div>
 
-                {/* Weekly bar */}
-                <div style={{ marginTop: 4 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>
-                        <span>本周累计</span>
-                        <span>{weekly}%</span>
-                    </div>
-                    <div className="progress-bar">
-                        <div
-                            className={`progress-bar__fill ${weekly < 60 ? 'progress-bar__fill--green' : weekly < 80 ? 'progress-bar__fill--yellow' : 'progress-bar__fill--red'}`}
-                            style={{ width: `${weekly}%` }}
-                        />
-                    </div>
+                {/* Token preview */}
+                <div style={{
+                    marginTop: 16,
+                    padding: '10px 14px',
+                    background: 'var(--bg-card)',
+                    borderRadius: 'var(--radius-sm)',
+                    border: '1px solid var(--border-subtle)',
+                    fontSize: 12,
+                    fontFamily: 'monospace',
+                    color: 'var(--text-muted)',
+                    wordBreak: 'break-all',
+                }}>
+                    <div style={{ fontSize: 11, marginBottom: 4, color: 'var(--text-secondary)' }}>Token</div>
+                    {tokenPreview}
                 </div>
 
                 <div style={{ marginTop: 12, fontSize: 11, color: 'var(--text-muted)' }}>
-                    💡 数据基于本地会话记录估算。点击「刷新」更新。
-                </div>
-            </div>
-
-            {/* 7-Day Trend */}
-            <div className="card">
-                <div className="card__title">
-                    <span className="card__title-dot" style={{ background: 'var(--info)' }} />
-                    7日使用趋势
-                </div>
-                <div style={{ height: 140 }}>
-                    <ResponsiveContainer width="100%" height="100%">
-                        <AreaChart data={history} margin={{ top: 5, right: 0, left: -20, bottom: 0 }}>
-                            <defs>
-                                <linearGradient id={`grad-${account.id}`} x1="0" y1="0" x2="0" y2="1">
-                                    <stop offset="5%" stopColor={account.avatarColor} stopOpacity={0.3} />
-                                    <stop offset="95%" stopColor={account.avatarColor} stopOpacity={0} />
-                                </linearGradient>
-                            </defs>
-                            <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                            <XAxis dataKey="date" tick={{ fontSize: 10 }} tickFormatter={(v) => v.slice(5)} />
-                            <YAxis domain={[0, 100]} hide />
-                            <Tooltip
-                                contentStyle={{
-                                    background: 'var(--bg-panel)',
-                                    border: '1px solid var(--border-normal)',
-                                    borderRadius: 8,
-                                    fontSize: 12,
-                                }}
-                                formatter={(val: number | undefined) => [`${val ?? 0}%`, '估算用量']}
-                            />
-                            <Area
-                                type="monotone"
-                                dataKey="estimatedPercent"
-                                stroke={account.avatarColor}
-                                strokeWidth={2}
-                                fill={`url(#grad-${account.id})`}
-                                dot={{ fill: account.avatarColor, strokeWidth: 0, r: 3 }}
-                                activeDot={{ r: 5 }}
-                            />
-                        </AreaChart>
-                    </ResponsiveContainer>
-                </div>
-            </div>
-
-            {/* Stats */}
-            <div className="stats-row">
-                <div className="stat-item">
-                    <div className="stat-value">{account.totalSessions}</div>
-                    <div className="stat-label">总会话数</div>
-                </div>
-                <div className="stat-item">
-                    <div className="stat-value">{formatDate(account.addedAt)}</div>
-                    <div className="stat-label">添加时间</div>
-                </div>
-                <div className="stat-item">
-                    <div className="stat-value">
-                        {account.lastUsedAt ? formatDate(account.lastUsedAt) : '—'}
-                    </div>
-                    <div className="stat-label">最后使用</div>
+                    💡 Codex 用量限额（5小时/每周）请在 Codex IDE 中查看
                 </div>
             </div>
         </div>
@@ -255,20 +197,5 @@ export function AccountDetail({ account }: AccountDetailProps) {
 
 function formatDate(ts: number): string {
     const d = new Date(ts);
-    return `${d.getMonth() + 1}/${d.getDate()}`;
-}
-
-function generateDemoHistory() {
-    const days = [];
-    for (let i = 6; i >= 0; i--) {
-        const d = new Date();
-        d.setDate(d.getDate() - i);
-        const dateStr = d.toISOString().split('T')[0];
-        days.push({
-            date: dateStr,
-            sessions: 0,
-            estimatedPercent: 0,
-        });
-    }
-    return days;
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }

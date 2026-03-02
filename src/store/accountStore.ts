@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { Account, DailyUsage } from '../types';
+import type { Account } from '../types';
 
 // ── Tauri invoke (graceful fallback for browser dev mode) ──────────────────
 async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
@@ -8,12 +8,7 @@ async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Prom
         const { invoke } = await import('@tauri-apps/api/core');
         return await invoke<T>(cmd, args);
     } catch {
-        // Running in browser (dev without Tauri), use mock
         console.warn(`[mock] tauri invoke: ${cmd}`, args);
-        if (cmd === 'write_auth') return undefined as T;
-        if (cmd === 'read_current_auth') return '' as T;
-        if (cmd === 'auth_exists') return false as T;
-        if (cmd === 'get_codex_dir') return '~/.codex' as T;
         return undefined as T;
     }
 }
@@ -36,17 +31,14 @@ function generateId(): string {
 interface AccountStore {
     accounts: Account[];
     activeAccountId: string | null;
-    usageHistory: Record<string, DailyUsage[]>;
     isLoading: boolean;
     error: string | null;
 
     addAccount: (alias: string, email?: string, authJson?: string) => Account;
     removeAccount: (id: string) => void;
     switchAccount: (id: string) => Promise<void>;
-    updateAccountUsage: (id: string, fiveHourPercent: number, weeklyPercent: number) => void;
     renameAccount: (id: string, newAlias: string) => void;
     setError: (error: string | null) => void;
-    recordUsage: (accountId: string) => void;
 }
 
 // ── Store ──────────────────────────────────────────────────────────────────
@@ -55,7 +47,6 @@ export const useAccountStore = create<AccountStore>()(
         (set, get) => ({
             accounts: [],
             activeAccountId: null,
-            usageHistory: {},
             isLoading: false,
             error: null,
 
@@ -71,8 +62,6 @@ export const useAccountStore = create<AccountStore>()(
                     addedAt: Date.now(),
                     isActive: false,
                     totalSessions: 0,
-                    weeklyUsagePercent: 0,
-                    fiveHourUsagePercent: 0,
                 };
                 set((state) => ({ accounts: [...state.accounts, newAccount] }));
                 return newAccount;
@@ -91,12 +80,12 @@ export const useAccountStore = create<AccountStore>()(
                     const target = get().accounts.find((a) => a.id === id);
                     if (!target) throw new Error('账户不存在');
 
-                    // Write auth.json via Tauri Rust command
+                    // CRITICAL: Write the FULL auth.json to ~/.codex/auth.json
                     if (target.authJson) {
                         await tauriInvoke('write_auth', { content: target.authJson });
+                    } else {
+                        throw new Error('此账户没有保存 auth.json 凭据，请重新登录');
                     }
-
-                    const prevActiveId = get().activeAccountId;
 
                     set((state) => ({
                         accounts: state.accounts.map((a) => ({
@@ -108,25 +97,10 @@ export const useAccountStore = create<AccountStore>()(
                         activeAccountId: id,
                         isLoading: false,
                     }));
-
-                    // Record usage for previous account
-                    if (prevActiveId && prevActiveId !== id) {
-                        get().recordUsage(prevActiveId);
-                    }
                 } catch (err) {
                     set({ isLoading: false, error: String(err) });
                     throw err;
                 }
-            },
-
-            updateAccountUsage: (id: string, fiveHourPercent: number, weeklyPercent: number) => {
-                set((state) => ({
-                    accounts: state.accounts.map((a) =>
-                        a.id === id
-                            ? { ...a, fiveHourUsagePercent: fiveHourPercent, weeklyUsagePercent: weeklyPercent }
-                            : a
-                    ),
-                }));
             },
 
             renameAccount: (id: string, newAlias: string) => {
@@ -140,31 +114,7 @@ export const useAccountStore = create<AccountStore>()(
             },
 
             setError: (error) => set({ error }),
-
-            recordUsage: (accountId: string) => {
-                const today = new Date().toISOString().split('T')[0];
-                set((state) => {
-                    const history = state.usageHistory[accountId] || [];
-                    const todayEntry = history.find((d) => d.date === today);
-                    const updatedHistory = todayEntry
-                        ? history.map((d) =>
-                            d.date === today
-                                ? { ...d, sessions: d.sessions + 1, estimatedPercent: Math.min(100, d.estimatedPercent + 15) }
-                                : d
-                        )
-                        : [...history, { date: today, sessions: 1, estimatedPercent: 15 }];
-
-                    const sorted = updatedHistory
-                        .sort((a, b) => b.date.localeCompare(a.date))
-                        .slice(0, 7)
-                        .reverse();
-
-                    return {
-                        usageHistory: { ...state.usageHistory, [accountId]: sorted },
-                    };
-                });
-            },
         }),
-        { name: 'codex-manager-v1' }
+        { name: 'codex-manager-v2' }  // v2: clean data schema, no fake usage
     )
 );
