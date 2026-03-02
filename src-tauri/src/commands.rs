@@ -165,8 +165,31 @@ pub async fn start_openai_oauth_login() -> Result<String, String> {
         return Err(format!("OpenAI 返回错误: {}", err));
     }
 
-    // 7. Save the COMPLETE original JSON from OpenAI (not a subset!)
-    let auth_str = serde_json::to_string_pretty(&token_json)
+    // 7. Convert OAuth response to Codex CLI's expected AuthDotJson format
+    //    Codex CLI expects: { auth_mode, tokens: { id_token, access_token, refresh_token, account_id }, last_refresh }
+    let access_token = token_json.get("access_token").and_then(|v| v.as_str())
+        .ok_or("响应中缺少 access_token")?;
+    let refresh_token = token_json.get("refresh_token").and_then(|v| v.as_str())
+        .unwrap_or("");
+    let id_token_raw = token_json.get("id_token").and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    // Parse chatgpt_account_id from the access_token JWT claims
+    let account_id = extract_jwt_claim(access_token, "https://api.openai.com/auth", "chatgpt_account_id");
+
+    // Build Codex CLI compatible auth.json
+    let auth_dot_json = serde_json::json!({
+        "auth_mode": "chatgpt",
+        "tokens": {
+            "id_token": id_token_raw,
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "account_id": account_id,
+        },
+        "last_refresh": chrono_now_rfc3339(),
+    });
+
+    let auth_str = serde_json::to_string_pretty(&auth_dot_json)
         .map_err(|e| format!("序列化失败: {e}"))?;
 
     // Write to ~/.codex/auth.json immediately
@@ -215,6 +238,7 @@ fn html_response(message: &str) -> String {
     format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\r\n\
         <!DOCTYPE html><html><head><meta charset='utf-8'><title>Codex Manager</title>\
+        <script>setTimeout(function(){{window.close()}},800)</script>\
         <style>\
         body{{font-family:-apple-system,sans-serif;display:flex;align-items:center;\
         justify-content:center;height:100vh;margin:0;background:#0A0E13;color:#F0F4F8;}}\
@@ -223,7 +247,64 @@ fn html_response(message: &str) -> String {
         </style></head>\
         <body><div class='box'>\
         <div style='font-size:20px;margin-bottom:12px'>{message}</div>\
-        <div style='font-size:13px;color:#8C9DB5'>可以关闭此标签页</div>\
         </div></body></html>"
     )
 }
+
+/// Parse a JWT (without verification) and extract a nested claim value.
+/// e.g. extract_jwt_claim(token, "https://api.openai.com/auth", "chatgpt_account_id")
+fn extract_jwt_claim(jwt: &str, namespace: &str, key: &str) -> Option<String> {
+    let parts: Vec<&str> = jwt.split('.').collect();
+    if parts.len() < 2 { return None; }
+    // JWT payload is base64url encoded (part index 1)
+    let payload = parts[1];
+    // Add padding if needed
+    let padded = match payload.len() % 4 {
+        2 => format!("{payload}=="),
+        3 => format!("{payload}="),
+        _ => payload.to_string(),
+    };
+    let decoded = base64ct::Base64UrlUnpadded::decode_vec(payload)
+        .or_else(|_| {
+            // Try with standard base64url with padding
+            use base64ct::Encoding;
+            let bytes = padded.as_bytes();
+            let mut buf = vec![0u8; bytes.len()];
+            base64ct::Base64Url::decode(bytes, &mut buf).map(|s| s.to_vec())
+        })
+        .ok()?;
+    let claims: Value = serde_json::from_slice(&decoded).ok()?;
+    claims.get(namespace)?.get(key)?.as_str().map(|s| s.to_string())
+}
+
+/// Generate current UTC timestamp in RFC3339 format (for last_refresh field)
+fn chrono_now_rfc3339() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    // Simple RFC3339 without chrono dependency
+    let days = secs / 86400;
+    let time_secs = secs % 86400;
+    let h = time_secs / 3600;
+    let m = (time_secs % 3600) / 60;
+    let s = time_secs % 60;
+
+    // Calculate date from days since epoch (simplified)
+    let mut y = 1970i64;
+    let mut remaining_days = days as i64;
+    loop {
+        let days_in_year = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 366 } else { 365 };
+        if remaining_days < days_in_year { break; }
+        remaining_days -= days_in_year;
+        y += 1;
+    }
+    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    let month_days = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut mo = 0usize;
+    for (i, &md) in month_days.iter().enumerate() {
+        if remaining_days < md as i64 { mo = i; break; }
+        remaining_days -= md as i64;
+    }
+
+    format!("{y:04}-{:02}-{:02}T{h:02}:{m:02}:{s:02}Z", mo + 1, remaining_days + 1)
+}
+
