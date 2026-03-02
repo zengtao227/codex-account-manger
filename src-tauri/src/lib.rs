@@ -14,6 +14,7 @@ pub fn run() {
             commands::auth_exists,
             commands::get_codex_dir,
             commands::open_codex_dir,
+            commands::restart_codex_ide,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -113,34 +113,41 @@ pub async fn start_openai_oauth_login() -> Result<String, String> {
 
     log::info!("OAuth: browser opened, waiting for callback...");
 
-    // 5. Poll for callback (max 120s)
-    let start = Instant::now();
-    let mut auth_code = None;
-
-    while start.elapsed() < Duration::from_secs(120) {
-        if let Ok((mut stream, _)) = listener.accept() {
-            stream.set_read_timeout(Some(Duration::from_millis(1000))).ok();
-            let mut buf = [0u8; 4096];
-            if let Ok(n) = stream.read(&mut buf) {
-                let req = String::from_utf8_lossy(&buf[..n]);
-                if let Some(code) = extract_param(&req, "code") {
-                    let extracted_state = extract_param(&req, "state").unwrap_or_default();
-                    if extracted_state != state {
+    // 5. Poll for callback in a separate OS thread (prevents UI freeze)
+    let state_clone = state.clone();
+    let (tx, rx) = std::sync::mpsc::channel::<Option<String>>();
+    std::thread::spawn(move || {
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(120) {
+            if let Ok((mut stream, _)) = listener.accept() {
+                stream.set_read_timeout(Some(Duration::from_millis(1000))).ok();
+                let mut buf = [0u8; 4096];
+                if let Ok(n) = stream.read(&mut buf) {
+                    let req = String::from_utf8_lossy(&buf[..n]);
+                    if let Some(code) = extract_param(&req, "code") {
+                        let extracted_state = extract_param(&req, "state").unwrap_or_default();
+                        if extracted_state != state_clone {
+                            let _ = stream.write_all(
+                                html_response("❌ 安全验证失败").as_bytes()
+                            );
+                            let _ = tx.send(None);
+                            return;
+                        }
                         let _ = stream.write_all(
-                            html_response("❌ 安全验证失败，请重试").as_bytes()
+                            html_response("✅ 授权成功！").as_bytes()
                         );
-                        return Err("State 验证失败".to_string());
+                        let _ = tx.send(Some(code));
+                        return;
                     }
-                    let _ = stream.write_all(
-                        html_response("✅ 授权成功！请回到 Codex Manager").as_bytes()
-                    );
-                    auth_code = Some(code);
-                    break;
                 }
             }
+            thread::sleep(Duration::from_millis(200));
         }
-        thread::sleep(Duration::from_millis(200));
-    }
+        let _ = tx.send(None);
+    });
+
+    // Wait for the result from the background thread (non-blocking to Tauri runtime)
+    let auth_code = rx.recv().unwrap_or(None);
 
     let code = auth_code.ok_or("登录超时（120秒），请重试")?;
     log::info!("OAuth: got auth code, exchanging for tokens...");
@@ -218,6 +225,33 @@ pub fn get_codex_dir() -> String { codex_dir().to_string_lossy().to_string() }
 pub fn open_codex_dir() -> Result<(), String> {
     Command::new("open").arg(codex_dir()).spawn().map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Restart Codex IDE so it re-reads auth.json
+#[tauri::command]
+pub fn restart_codex_ide() -> Result<String, String> {
+    // Kill running Codex IDE
+    let kill_result = Command::new("pkill").arg("-x").arg("Codex").output();
+    let was_running = match &kill_result {
+        Ok(output) => output.status.success(),
+        Err(_) => false,
+    };
+
+    if was_running {
+        // Wait a moment for clean shutdown
+        thread::sleep(Duration::from_millis(800));
+    }
+
+    // Relaunch Codex IDE
+    let launched = Command::new("open").arg("-a").arg("Codex").spawn().is_ok();
+
+    if was_running && launched {
+        Ok("Codex IDE 已重启".to_string())
+    } else if launched {
+        Ok("Codex IDE 已启动".to_string())
+    } else {
+        Err("无法启动 Codex IDE".to_string())
+    }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────

@@ -3,6 +3,16 @@ import type { Account } from '../../types';
 import { useAccountStore } from '../../store/accountStore';
 import { showToast } from '../common/Toast';
 
+async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+    try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        return await invoke<T>(cmd, args);
+    } catch {
+        console.warn(`[mock] tauri invoke: ${cmd}`, args);
+        return undefined as T;
+    }
+}
+
 interface AccountDetailProps {
     account: Account;
 }
@@ -19,7 +29,14 @@ export function AccountDetail({ account }: AccountDetailProps) {
         if (isActive) return;
         try {
             await switchAccount(account.id);
-            showToast(`已切换到「${account.alias}」，auth.json 已更新`, 'success');
+            showToast(`已切换到「${account.alias}」，正在重启 Codex IDE...`, 'success');
+            // Auto-restart Codex IDE to pick up new auth.json
+            try {
+                const msg = await tauriInvoke<string>('restart_codex_ide');
+                showToast(msg || 'Codex IDE 已重启', 'success');
+            } catch {
+                showToast('请手动重启 Codex IDE 以应用新账户', 'error');
+            }
         } catch (err) {
             showToast(`切换失败: ${err}`, 'error');
         }
@@ -139,7 +156,7 @@ export function AccountDetail({ account }: AccountDetailProps) {
                     fontSize: 13,
                     color: 'var(--text-accent)',
                 }}>
-                    <span>●</span> 当前正在使用此账户 — ~/.codex/auth.json 已同步
+                    <span>●</span> 当前使用中 — auth.json 已同步
                 </div>
             )}
 
