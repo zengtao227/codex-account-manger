@@ -60,10 +60,13 @@ export const useAccountStore = create<AccountStore>()(
                     avatarColor: getRandomColor(),
                     avatarInitial: initial,
                     addedAt: Date.now(),
-                    isActive: false,
-                    totalSessions: 0,
+                    isActive: true, // Should be true as backend just logged it in
+                    totalSessions: 1, // Already active
                 };
-                set((state) => ({ accounts: [...state.accounts, newAccount] }));
+                set((state) => ({
+                    accounts: [...state.accounts, newAccount],
+                    activeAccountId: newAccount.id // Sync Frontend with Backend reality
+                }));
                 return newAccount;
             },
 

@@ -26,7 +26,7 @@ function App() {
           </div>
           <span className="titlebar__logo-text">Codex Manager</span>
         </div>
-        <div className="titlebar__version">v0.1.1</div>
+        <div className="titlebar__version">v0.1.2</div>
       </header>
 
       {/* Main */}
