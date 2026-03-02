@@ -34,7 +34,7 @@ export function AddAccountModal({ onClose }: AddAccountModalProps) {
 
         try {
             // Calls Rust backend: opens Terminal with `codex login`, polls for auth.json
-            const authContent = await tauriInvoke<string>('start_oauth_login');
+            const authContent = await tauriInvoke<string>('start_openai_oauth_login');
             setCapturedAuth(authContent);
 
             // Extract email from auth.json if present
