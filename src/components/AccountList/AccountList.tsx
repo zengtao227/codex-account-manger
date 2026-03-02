@@ -2,7 +2,24 @@ import { useState } from 'react';
 import type { Account } from '../../types';
 import { useAccountStore } from '../../store/accountStore';
 import { AddAccountModal } from '../AddAccount/AddAccountModal';
-
+import {
+    DndContext,
+    closestCenter,
+    KeyboardSensor,
+    PointerSensor,
+    useSensor,
+    useSensors,
+} from '@dnd-kit/core';
+import type { DragEndEvent as DndDragEndEvent } from '@dnd-kit/core';
+import {
+    arrayMove,
+    SortableContext,
+    sortableKeyboardCoordinates,
+    verticalListSortingStrategy,
+    useSortable,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
+import { GripVertical } from 'lucide-react';
 
 interface AccountListProps {
     selectedId: string | null;
@@ -11,7 +28,29 @@ interface AccountListProps {
 
 export function AccountList({ selectedId, onSelect }: AccountListProps) {
     const [showAdd, setShowAdd] = useState(false);
-    const { accounts, activeAccountId } = useAccountStore();
+    const { accounts, activeAccountId, setAccounts } = useAccountStore();
+
+    const sensors = useSensors(
+        useSensor(PointerSensor, {
+            activationConstraint: {
+                distance: 8,
+            },
+        }),
+        useSensor(KeyboardSensor, {
+            coordinateGetter: sortableKeyboardCoordinates,
+        })
+    );
+
+    const handleDragEnd = (event: DndDragEndEvent) => {
+        const { active, over } = event;
+
+        if (over && active.id !== over.id) {
+            const oldIndex = accounts.findIndex((acc) => acc.id === active.id);
+            const newIndex = accounts.findIndex((acc) => acc.id === over.id);
+
+            setAccounts(arrayMove(accounts, oldIndex, newIndex));
+        }
+    };
 
     return (
         <aside className="sidebar">
@@ -36,15 +75,26 @@ export function AccountList({ selectedId, onSelect }: AccountListProps) {
                         </div>
                     </div>
                 ) : (
-                    accounts.map((acc) => (
-                        <AccountItem
-                            key={acc.id}
-                            account={acc}
-                            isSelected={selectedId === acc.id}
-                            isActive={activeAccountId === acc.id}
-                            onClick={() => onSelect(acc.id)}
-                        />
-                    ))
+                    <DndContext
+                        sensors={sensors}
+                        collisionDetection={closestCenter}
+                        onDragEnd={handleDragEnd}
+                    >
+                        <SortableContext
+                            items={accounts.map(acc => acc.id)}
+                            strategy={verticalListSortingStrategy}
+                        >
+                            {accounts.map((acc) => (
+                                <SortableAccountItem
+                                    key={acc.id}
+                                    account={acc}
+                                    isSelected={selectedId === acc.id}
+                                    isActive={activeAccountId === acc.id}
+                                    onClick={() => onSelect(acc.id)}
+                                />
+                            ))}
+                        </SortableContext>
+                    </DndContext>
                 )}
             </div>
 
@@ -62,7 +112,7 @@ export function AccountList({ selectedId, onSelect }: AccountListProps) {
     );
 }
 
-function AccountItem({
+function SortableAccountItem({
     account,
     isSelected,
     isActive,
@@ -73,11 +123,33 @@ function AccountItem({
     isActive: boolean;
     onClick: () => void;
 }) {
+    const {
+        attributes,
+        listeners,
+        setNodeRef,
+        transform,
+        transition,
+        isDragging,
+    } = useSortable({ id: account.id });
+
+    const style = {
+        transform: CSS.Transform.toString(transform),
+        transition,
+        zIndex: isDragging ? 10 : 1,
+        opacity: isDragging ? 0.6 : 1,
+    };
+
     return (
         <div
-            className={`account-item ${isSelected ? 'account-item--active' : ''}`}
+            ref={setNodeRef}
+            style={style}
+            className={`account-item ${isSelected ? 'account-item--active' : ''} ${isDragging ? 'account-item--dragging' : ''}`}
             onClick={onClick}
         >
+            <div className="account-item__drag-handle" {...attributes} {...listeners}>
+                <GripVertical size={14} />
+            </div>
+
             <div
                 className="account-avatar"
                 style={{ background: account.avatarColor }}

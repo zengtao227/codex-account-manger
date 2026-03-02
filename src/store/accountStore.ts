@@ -38,6 +38,7 @@ interface AccountStore {
     removeAccount: (id: string) => void;
     switchAccount: (id: string) => Promise<void>;
     renameAccount: (id: string, newAlias: string) => void;
+    setAccounts: (accounts: Account[]) => void;
     setError: (error: string | null) => void;
 }
 
@@ -115,7 +116,7 @@ export const useAccountStore = create<AccountStore>()(
                     ),
                 }));
             },
-
+            setAccounts: (accounts) => set({ accounts }),
             setError: (error) => set({ error }),
         }),
         { name: 'codex-manager-v2' }  // v2: clean data schema, no fake usage
