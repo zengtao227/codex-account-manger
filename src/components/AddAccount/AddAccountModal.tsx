@@ -7,7 +7,6 @@ interface AddAccountModalProps {
 }
 
 type Step = 'method' | 'oauth_waiting' | 'oauth_success' | 'manual';
-type OAuthStatus = 'idle' | 'waiting' | 'success' | 'error';
 
 // Tauri invoke with browser fallback
 async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
@@ -25,14 +24,12 @@ export function AddAccountModal({ onClose }: AddAccountModalProps) {
     const [email, setEmail] = useState('');
     const [authJson, setAuthJson] = useState('');
     const [error, setError] = useState('');
-    const [oauthStatus, setOAuthStatus] = useState<OAuthStatus>('idle');
     const [capturedAuth, setCapturedAuth] = useState('');
     const addAccount = useAccountStore((s) => s.addAccount);
 
     // ── OAuth Login ────────────────────────────────────────────────────────
     async function handleOAuthLogin() {
         setStep('oauth_waiting');
-        setOAuthStatus('waiting');
         setError('');
 
         try {
@@ -50,10 +47,8 @@ export function AddAccountModal({ onClose }: AddAccountModalProps) {
                 }
             } catch { /* ignore */ }
 
-            setOAuthStatus('success');
             setStep('oauth_success');
         } catch (err) {
-            setOAuthStatus('error');
             setError(String(err).replace('Error: ', ''));
             setStep('method');
         }
@@ -210,7 +205,6 @@ export function AddAccountModal({ onClose }: AddAccountModalProps) {
 
                         <button className="btn btn--secondary btn--sm" onClick={() => {
                             setStep('method');
-                            setOAuthStatus('idle');
                         }}>
                             取消
                         </button>
