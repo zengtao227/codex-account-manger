@@ -91,16 +91,26 @@ export const useAccountStore = create<AccountStore>()(
                         throw new Error('此账户没有保存 auth.json 凭据，请重新登录');
                     }
 
-                    set((state) => ({
-                        accounts: state.accounts.map((a) => ({
-                            ...a,
-                            isActive: a.id === id,
-                            lastUsedAt: a.id === id ? Date.now() : a.lastUsedAt,
-                            totalSessions: a.id === id ? a.totalSessions + 1 : a.totalSessions,
-                        })),
+                    // Move the used account to the bottom of the list
+                    const currentAccounts = get().accounts;
+                    const updatedAccounts = currentAccounts.map((a: Account) => ({
+                        ...a,
+                        isActive: a.id === id,
+                        lastUsedAt: a.id === id ? Date.now() : a.lastUsedAt,
+                        totalSessions: a.id === id ? a.totalSessions + 1 : a.totalSessions,
+                    }));
+
+                    const currentIndex = updatedAccounts.findIndex((a: Account) => a.id === id);
+                    if (currentIndex !== -1) {
+                        const accountToMove = updatedAccounts.splice(currentIndex, 1)[0];
+                        updatedAccounts.push(accountToMove);
+                    }
+
+                    set({
+                        accounts: updatedAccounts,
                         activeAccountId: id,
                         isLoading: false,
-                    }));
+                    });
                 } catch (err) {
                     set({ isLoading: false, error: String(err) });
                     throw err;
@@ -119,6 +129,6 @@ export const useAccountStore = create<AccountStore>()(
             setAccounts: (accounts) => set({ accounts }),
             setError: (error) => set({ error }),
         }),
-        { name: 'codex-manager-v2' }  // v2: clean data schema, no fake usage
+        { name: 'codex-manager-v1' }
     )
 );

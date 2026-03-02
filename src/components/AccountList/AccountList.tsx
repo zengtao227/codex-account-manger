@@ -146,7 +146,7 @@ function SortableAccountItem({
             className={`account-item ${isSelected ? 'account-item--active' : ''} ${isDragging ? 'account-item--dragging' : ''}`}
             onClick={onClick}
         >
-            <div className="account-item__drag-handle" {...attributes} {...listeners}>
+            <div className="account-item__drag-handle account-item__drag-handle--left" {...attributes} {...listeners}>
                 <GripVertical size={14} />
             </div>
 
@@ -171,6 +171,10 @@ function SortableAccountItem({
                             : '从未使用'}
                     </div>
                 )}
+            </div>
+
+            <div className="account-item__drag-handle account-item__drag-handle--right" {...attributes} {...listeners}>
+                <GripVertical size={14} />
             </div>
         </div>
     );

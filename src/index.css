@@ -305,18 +305,26 @@ h3 {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
+  width: 24px;
   height: 34px;
   color: var(--text-muted);
   cursor: grab;
   opacity: 0;
   transition: opacity var(--dur-fast), color var(--dur-fast);
-  margin-left: -4px;
+}
+
+.account-item__drag-handle--left {
+  margin-left: -12px;
   margin-right: -4px;
 }
 
+.account-item__drag-handle--right {
+  margin-right: -12px;
+  margin-left: 4px;
+}
+
 .account-item:hover .account-item__drag-handle {
-  opacity: 0.5;
+  opacity: 0.4;
 }
 
 .account-item__drag-handle:hover {
