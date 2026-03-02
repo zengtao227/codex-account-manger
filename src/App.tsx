@@ -16,12 +16,22 @@ function App() {
 
   return (
     <div className="app-shell">
-      {/* Title Bar */}
-      <header className="titlebar">
+      {/* Title Bar - draggable */}
+      <header className="titlebar" data-tauri-drag-region>
         <div className="titlebar__controls">
-          <div className="titlebar__dot titlebar__dot--close" />
-          <div className="titlebar__dot titlebar__dot--min" />
-          <div className="titlebar__dot titlebar__dot--max" />
+          <div className="titlebar__dot titlebar__dot--close" onClick={async () => {
+            const { getCurrentWindow } = await import('@tauri-apps/api/window');
+            getCurrentWindow().close();
+          }} />
+          <div className="titlebar__dot titlebar__dot--min" onClick={async () => {
+            const { getCurrentWindow } = await import('@tauri-apps/api/window');
+            getCurrentWindow().minimize();
+          }} />
+          <div className="titlebar__dot titlebar__dot--max" onClick={async () => {
+            const { getCurrentWindow } = await import('@tauri-apps/api/window');
+            const win = getCurrentWindow();
+            if (await win.isMaximized()) { win.unmaximize(); } else { win.maximize(); }
+          }} />
         </div>
 
         <div className="titlebar__logo">
