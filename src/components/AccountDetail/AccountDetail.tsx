@@ -135,6 +135,21 @@ export function AccountDetail({ account }: AccountDetailProps) {
                 </button>
             )}
 
+            {!hasAuth && (
+                <div style={{
+                    marginBottom: 20,
+                    padding: '14px 16px',
+                    background: 'rgba(245, 158, 11, 0.08)',
+                    border: '1px solid rgba(245, 158, 11, 0.22)',
+                    borderRadius: 'var(--radius-md)',
+                }}>
+                    <div style={{ fontSize: 12, lineHeight: 1.6, color: 'var(--text-secondary)' }}>
+                        这条旧账户记录缺少保存下来的 <code>auth.json</code>，当前不能自动切换。
+                        请删除后重新登录添加，新的记录会自动保存完整凭据。
+                    </div>
+                </div>
+            )}
+
             {isActive && (
                 <div style={{
                     marginBottom: 20,

@@ -34,6 +34,7 @@ interface AccountStore {
     activeAccountId: string | null;
     isLoading: boolean;
     error: string | null;
+    hasHydrated: boolean;
 
     addAccount: (alias: string, email?: string, authJson?: string, activate?: boolean) => Account;
     removeAccount: (id: string) => void;
@@ -43,6 +44,7 @@ interface AccountStore {
     renameAccount: (id: string, newAlias: string) => void;
     setAccounts: (accounts: Account[]) => void;
     setError: (error: string | null) => void;
+    setHasHydrated: (value: boolean) => void;
 }
 
 function syncStoredAuth(
@@ -81,6 +83,7 @@ export const useAccountStore = create<AccountStore>()(
             activeAccountId: null,
             isLoading: false,
             error: null,
+            hasHydrated: false,
 
             addAccount: (alias: string, email?: string, authJson?: string, activate = false) => {
                 const initial = alias.charAt(0).toUpperCase();
@@ -221,7 +224,13 @@ export const useAccountStore = create<AccountStore>()(
             },
             setAccounts: (accounts) => set({ accounts }),
             setError: (error) => set({ error }),
+            setHasHydrated: (value) => set({ hasHydrated: value }),
         }),
-        { name: 'codex-manager-v1' }
+        {
+            name: 'codex-manager-v1',
+            onRehydrateStorage: () => (state) => {
+                state?.setHasHydrated(true);
+            },
+        }
     )
 );

@@ -1,0 +1,8 @@
+#!/bin/sh
+set -e
+
+echo "[pre-push] npm run build"
+npm run build
+
+echo "[pre-push] cargo check --manifest-path src-tauri/Cargo.toml"
+cargo check --manifest-path src-tauri/Cargo.toml

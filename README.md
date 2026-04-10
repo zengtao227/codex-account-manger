@@ -52,6 +52,50 @@ npm run tauri dev
 npm run tauri build
 ```
 
+## ✅ 修改后流程
+
+每次完成代码修改后，必须按这个顺序收口，不能停在“本地已经改好”：
+
+```bash
+# 1. 前端检查
+npm run build
+
+# 2. Rust 检查
+cargo check --manifest-path src-tauri/Cargo.toml
+
+# 3. 查看改动
+git status
+
+# 4. 提交
+git add <files>
+git commit -m "fix: ..."
+
+# 5. 推送到 GitHub
+git push origin main
+```
+
+规则：
+
+- 任务只有在 `git push origin main` 成功后才算完成。
+- 如果构建或检查失败，先修复，再提交，再推送。
+- 不允许只改本地、不推 GitHub。
+
+## 🔒 推荐 Hook
+
+推荐启用仓库自带的 `pre-push` hook。它不会自动帮你推送，但会在推送前强制跑检查，避免把坏代码推上去。
+
+```bash
+git config core.hooksPath .githooks
+chmod +x .githooks/pre-push
+```
+
+启用后，每次 `git push` 前会自动执行：
+
+- `npm run build`
+- `cargo check --manifest-path src-tauri/Cargo.toml`
+
+任何一步失败，本次推送都会被拦下。
+
 ## 📖 核心逻辑
 
 1. **OAuth 捕获**：使用 Rust 监听本地 1455 端口，自动与 OpenAI 授权服务通信。

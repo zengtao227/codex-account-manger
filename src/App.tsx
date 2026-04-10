@@ -7,11 +7,12 @@ import { useAccountStore } from './store/accountStore';
 
 function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const { accounts, syncCurrentAuth } = useAccountStore();
+  const { accounts, syncCurrentAuth, hasHydrated } = useAccountStore();
 
   useEffect(() => {
+    if (!hasHydrated) return;
     void syncCurrentAuth();
-  }, [syncCurrentAuth]);
+  }, [hasHydrated, syncCurrentAuth]);
 
   const selectedAccount = accounts.find((a) => a.id === selectedId) ?? accounts[0] ?? null;
 
