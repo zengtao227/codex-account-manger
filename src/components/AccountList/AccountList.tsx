@@ -2,6 +2,8 @@ import { useState } from 'react';
 import type { Account } from '../../types';
 import { useAccountStore } from '../../store/accountStore';
 import { AddAccountModal } from '../AddAccount/AddAccountModal';
+import { showToast } from '../common/Toast';
+import { buildBackupFilename, createBackupPayload, parseBackupPayload } from '../../utils/accountBackup';
 import {
     DndContext,
     closestCenter,
@@ -28,7 +30,8 @@ interface AccountListProps {
 
 export function AccountList({ selectedId, onSelect }: AccountListProps) {
     const [showAdd, setShowAdd] = useState(false);
-    const { accounts, activeAccountId, setAccounts } = useAccountStore();
+    const [isBackupBusy, setIsBackupBusy] = useState(false);
+    const { accounts, activeAccountId, setAccounts, restoreAccounts } = useAccountStore();
 
     const sensors = useSensors(
         useSensor(PointerSensor, {
@@ -51,6 +54,68 @@ export function AccountList({ selectedId, onSelect }: AccountListProps) {
             setAccounts(arrayMove(accounts, oldIndex, newIndex));
         }
     };
+
+    async function handleExportBackup() {
+        if (isBackupBusy) return;
+        setIsBackupBusy(true);
+
+        try {
+            const [{ save }, { writeTextFile }] = await Promise.all([
+                import('@tauri-apps/plugin-dialog'),
+                import('@tauri-apps/plugin-fs'),
+            ]);
+
+            const payload = createBackupPayload(accounts, activeAccountId);
+            const filePath = await save({
+                defaultPath: buildBackupFilename(),
+                filters: [{ name: 'JSON', extensions: ['json'] }],
+            });
+
+            if (!filePath) return;
+
+            await writeTextFile(filePath, JSON.stringify(payload, null, 2));
+            showToast(`已导出 ${accounts.length} 个账户的备份`, 'success');
+        } catch (err) {
+            showToast(`备份失败: ${String(err)}`, 'error');
+        } finally {
+            setIsBackupBusy(false);
+        }
+    }
+
+    async function handleRestoreBackup() {
+        if (isBackupBusy) return;
+
+        const confirmed = window.confirm(
+            '恢复备份会用文件中的账户数据替换当前列表。建议先做一次备份。是否继续？'
+        );
+        if (!confirmed) return;
+
+        setIsBackupBusy(true);
+
+        try {
+            const [{ open }, { readTextFile }] = await Promise.all([
+                import('@tauri-apps/plugin-dialog'),
+                import('@tauri-apps/plugin-fs'),
+            ]);
+
+            const selected = await open({
+                multiple: false,
+                filters: [{ name: 'JSON', extensions: ['json'] }],
+            });
+
+            if (!selected || Array.isArray(selected)) return;
+
+            const content = await readTextFile(selected);
+            const backup = parseBackupPayload(content);
+
+            await restoreAccounts(backup.data.accounts, backup.data.activeAccountId);
+            showToast(`已恢复 ${backup.data.accounts.length} 个账户`, 'success');
+        } catch (err) {
+            showToast(`恢复失败: ${String(err)}`, 'error');
+        } finally {
+            setIsBackupBusy(false);
+        }
+    }
 
     return (
         <aside className="sidebar">
@@ -99,6 +164,22 @@ export function AccountList({ selectedId, onSelect }: AccountListProps) {
             </div>
 
             <div className="sidebar__footer">
+                <div className="sidebar__actions">
+                    <button
+                        className="btn btn--secondary btn--sm btn--full"
+                        onClick={() => void handleExportBackup()}
+                        disabled={isBackupBusy || accounts.length === 0}
+                    >
+                        {isBackupBusy ? '处理中…' : '备份账户'}
+                    </button>
+                    <button
+                        className="btn btn--secondary btn--sm btn--full"
+                        onClick={() => void handleRestoreBackup()}
+                        disabled={isBackupBusy}
+                    >
+                        {isBackupBusy ? '处理中…' : '恢复备份'}
+                    </button>
+                </div>
                 <button
                     className="btn btn--secondary btn--full btn--sm"
                     onClick={() => setShowAdd(true)}

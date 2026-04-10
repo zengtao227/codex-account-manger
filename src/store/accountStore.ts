@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { Account } from '../types';
+import { matchAccountIdByAuth, parseAuthJson } from '../utils/auth';
 
 // ── Tauri invoke (graceful fallback for browser dev mode) ──────────────────
 async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
@@ -34,12 +35,42 @@ interface AccountStore {
     isLoading: boolean;
     error: string | null;
 
-    addAccount: (alias: string, email?: string, authJson?: string) => Account;
+    addAccount: (alias: string, email?: string, authJson?: string, activate?: boolean) => Account;
     removeAccount: (id: string) => void;
     switchAccount: (id: string) => Promise<void>;
+    syncCurrentAuth: () => Promise<void>;
+    restoreAccounts: (accounts: Account[], activeAccountId: string | null) => Promise<void>;
     renameAccount: (id: string, newAlias: string) => void;
     setAccounts: (accounts: Account[]) => void;
     setError: (error: string | null) => void;
+}
+
+function syncStoredAuth(
+    accounts: Account[],
+    authJson: string,
+    fallbackId: string | null,
+    markActive: boolean
+): { accounts: Account[]; matchedId: string | null } {
+    const matchedId = matchAccountIdByAuth(accounts, authJson) ?? fallbackId;
+    if (!matchedId) {
+        return { accounts, matchedId: null };
+    }
+
+    const parsed = parseAuthJson(authJson);
+    const updatedAccounts = accounts.map((account) => {
+        if (account.id !== matchedId) {
+            return markActive ? { ...account, isActive: false } : account;
+        }
+
+        return {
+            ...account,
+            authJson,
+            email: parsed?.email || account.email,
+            isActive: true,
+        };
+    });
+
+    return { accounts: updatedAccounts, matchedId };
 }
 
 // ── Store ──────────────────────────────────────────────────────────────────
@@ -51,22 +82,29 @@ export const useAccountStore = create<AccountStore>()(
             isLoading: false,
             error: null,
 
-            addAccount: (alias: string, email?: string, authJson?: string) => {
+            addAccount: (alias: string, email?: string, authJson?: string, activate = false) => {
                 const initial = alias.charAt(0).toUpperCase();
+                const parsedAuth = parseAuthJson(authJson);
                 const newAccount: Account = {
                     id: generateId(),
                     alias,
-                    email,
+                    email: email || parsedAuth?.email,
                     authJson,
                     avatarColor: getRandomColor(),
                     avatarInitial: initial,
                     addedAt: Date.now(),
-                    isActive: true, // Should be true as backend just logged it in
-                    totalSessions: 1, // Already active
+                    isActive: activate,
+                    totalSessions: activate ? 1 : 0,
                 };
                 set((state) => ({
-                    accounts: [...state.accounts, newAccount],
-                    activeAccountId: newAccount.id // Sync Frontend with Backend reality
+                    accounts: [
+                        ...state.accounts.map((account) => ({
+                            ...account,
+                            isActive: activate ? false : account.isActive,
+                        })),
+                        newAccount,
+                    ],
+                    activeAccountId: activate ? newAccount.id : state.activeAccountId,
                 }));
                 return newAccount;
             },
@@ -81,19 +119,38 @@ export const useAccountStore = create<AccountStore>()(
             switchAccount: async (id: string) => {
                 set({ isLoading: true, error: null });
                 try {
-                    const target = get().accounts.find((a) => a.id === id);
+                    let accounts = get().accounts;
+                    const currentAuth = await tauriInvoke<string>('read_current_auth');
+                    if (currentAuth?.trim()) {
+                        const synced = syncStoredAuth(accounts, currentAuth, get().activeAccountId, false);
+                        accounts = synced.accounts;
+                    }
+
+                    const target = accounts.find((a) => a.id === id);
                     if (!target) throw new Error('账户不存在');
 
-                    // CRITICAL: Write the FULL auth.json to ~/.codex/auth.json
+                    await tauriInvoke('logout_codex');
+
+                    // Refresh target auth first so stale stored access tokens do not require manual logout/login.
                     if (target.authJson) {
-                        await tauriInvoke('write_auth', { content: target.authJson });
+                        const refreshedAuth = await tauriInvoke<string>('refresh_auth_tokens', { content: target.authJson });
+                        accounts = accounts.map((account) =>
+                            account.id === id
+                                ? {
+                                    ...account,
+                                    authJson: refreshedAuth,
+                                    email: parseAuthJson(refreshedAuth)?.email || account.email,
+                                }
+                                : account
+                        );
+
+                        await tauriInvoke('write_auth', { content: refreshedAuth });
                     } else {
                         throw new Error('此账户没有保存 auth.json 凭据，请重新登录');
                     }
 
                     // Move the used account to the bottom of the list
-                    const currentAccounts = get().accounts;
-                    const updatedAccounts = currentAccounts.map((a: Account) => ({
+                    const updatedAccounts = accounts.map((a: Account) => ({
                         ...a,
                         isActive: a.id === id,
                         lastUsedAt: a.id === id ? Date.now() : a.lastUsedAt,
@@ -115,6 +172,42 @@ export const useAccountStore = create<AccountStore>()(
                     set({ isLoading: false, error: String(err) });
                     throw err;
                 }
+            },
+
+            syncCurrentAuth: async () => {
+                try {
+                    const currentAuth = await tauriInvoke<string>('read_current_auth');
+                    if (!currentAuth?.trim()) return;
+
+                    const synced = syncStoredAuth(get().accounts, currentAuth, get().activeAccountId, true);
+                    if (!synced.matchedId) return;
+
+                    set({
+                        accounts: synced.accounts,
+                        activeAccountId: synced.matchedId,
+                    });
+                } catch (err) {
+                    console.warn('syncCurrentAuth failed', err);
+                }
+            },
+
+            restoreAccounts: async (accounts: Account[], activeAccountId: string | null) => {
+                const normalizedAccounts = accounts.map((account) => ({
+                    ...account,
+                    isActive: account.id === activeAccountId,
+                }));
+
+                const activeAccount = normalizedAccounts.find((account) => account.id === activeAccountId) ?? null;
+                if (activeAccount?.authJson) {
+                    await tauriInvoke('write_auth', { content: activeAccount.authJson });
+                }
+
+                set({
+                    accounts: normalizedAccounts,
+                    activeAccountId,
+                    isLoading: false,
+                    error: null,
+                });
             },
 
             renameAccount: (id: string, newAlias: string) => {

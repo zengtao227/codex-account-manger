@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { Account } from '../../types';
 import { useAccountStore } from '../../store/accountStore';
 import { showToast } from '../common/Toast';
+import { maskToken, parseAuthJson } from '../../utils/auth';
 
 async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
     try {
@@ -58,16 +59,7 @@ export function AccountDetail({ account }: AccountDetailProps) {
 
     // Check if authJson contains a valid token
     const hasAuth = !!account.authJson;
-    let tokenPreview = '无';
-    if (account.authJson) {
-        try {
-            const parsed = JSON.parse(account.authJson);
-            const token = parsed.access_token || parsed.token || '';
-            if (token) {
-                tokenPreview = token.substring(0, 12) + '...' + token.substring(token.length - 6);
-            }
-        } catch { /* ignore */ }
-    }
+    const tokenPreview = maskToken(parseAuthJson(account.authJson)?.accessToken);
 
     return (
         <div className="detail-panel">

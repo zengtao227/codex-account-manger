@@ -14,6 +14,9 @@ pub fn run() {
             commands::auth_exists,
             commands::get_codex_dir,
             commands::open_codex_dir,
+            commands::logout_codex,
+            commands::clear_codex_app_session,
+            commands::refresh_auth_tokens,
             commands::restart_codex_ide,
         ])
         .run(tauri::generate_context!())

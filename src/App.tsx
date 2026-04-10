@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import './index.css';
 import { AccountList } from './components/AccountList/AccountList';
 import { AccountDetail } from './components/AccountDetail/AccountDetail';
@@ -7,7 +7,11 @@ import { useAccountStore } from './store/accountStore';
 
 function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const { accounts } = useAccountStore();
+  const { accounts, syncCurrentAuth } = useAccountStore();
+
+  useEffect(() => {
+    void syncCurrentAuth();
+  }, [syncCurrentAuth]);
 
   const selectedAccount = accounts.find((a) => a.id === selectedId) ?? accounts[0] ?? null;
 

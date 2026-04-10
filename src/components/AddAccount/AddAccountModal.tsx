@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useAccountStore } from '../../store/accountStore';
 import { showToast } from '../common/Toast';
+import { parseAuthJson } from '../../utils/auth';
 
 interface AddAccountModalProps {
     onClose: () => void;
@@ -37,15 +38,12 @@ export function AddAccountModal({ onClose }: AddAccountModalProps) {
             const authContent = await tauriInvoke<string>('start_openai_oauth_login');
             setCapturedAuth(authContent);
 
-            // Extract email from auth.json if present
-            try {
-                const parsed = JSON.parse(authContent);
-                const detectedEmail = parsed?.user?.email || parsed?.email || '';
-                setEmail(detectedEmail);
-                if (detectedEmail) {
-                    setAlias(detectedEmail.split('@')[0]);
-                }
-            } catch { /* ignore */ }
+            const parsedAuth = parseAuthJson(authContent);
+            const detectedEmail = parsedAuth?.email || '';
+            setEmail(detectedEmail);
+            if (detectedEmail) {
+                setAlias(detectedEmail.split('@')[0]);
+            }
 
             setStep('oauth_success');
         } catch (err) {
@@ -61,7 +59,7 @@ export function AddAccountModal({ onClose }: AddAccountModalProps) {
             setError('请输入账户别名');
             return;
         }
-        addAccount(alias.trim(), email.trim() || undefined, capturedAuth);
+        addAccount(alias.trim(), email.trim() || undefined, capturedAuth, true);
         showToast(`✅ 账户「${alias.trim()}」登录并保存成功！`, 'success');
         onClose();
     }
